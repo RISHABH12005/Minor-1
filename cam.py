@@ -1,19 +1,42 @@
-from fastapi import FastAPI, Response
 import cv2
 import asyncio
+from fastapi import FastAPI, WebSocket
 
 app = FastAPI()
 
-def generate_frames():
-    print("working")
-    cap = cv2.VideoCapture(0)
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+# ---- WebSocket for camera streaming ----
+@app.websocket("/ws_cam")
+async def camera_ws(websocket: WebSocket):
+    await websocket.accept()
+    cap = cv2.VideoCapture(0)  # Robot camera
 
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    cap.release()
+    if not cap.isOpened():
+        print("Camera not accessible")
+        await websocket.close()
+        return
+
+    try:
+        fps = 20
+        delay = 1 / fps
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            # Resize + compress
+            frame = cv2.resize(frame, (640, 360))
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if not ret:
+                continue
+
+            # Send raw JPEG bytes (no Base64, more efficient)
+            await websocket.send_bytes(buffer.tobytes())
+
+            await asyncio.sleep(delay)  # frame rate control
+
+    except Exception as e:
+        print("Camera connection closed:", e)
+    finally:
+        cap.release()
+       
