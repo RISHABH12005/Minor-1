@@ -3,7 +3,7 @@ import time
 import cv2
 
 picam2 = Picamera2()
-picam2.preview_configuration.main.size = (640, 480)
+picam2.preview_configuration.main.size = (1080, 1080)
 picam2.preview_configuration.main.format = "RGB888"
 picam2.configure("preview")
 picam2.start()
