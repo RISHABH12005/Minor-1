@@ -7,35 +7,36 @@ B = BP.PORT_C
 C = BP.PORT_B
 D = BP.PORT_D
 
-DEFAULT_SPEED = 300
+DEFAULT_SPEED = 1000
 
 def forward(speed=DEFAULT_SPEED):
     print("Moving forward")
-    BP.set_motor_dps(A, speed)
+    BP.set_motor_dps(A, -speed)
     BP.set_motor_dps(B, speed)
     BP.set_motor_dps(C, speed)
-    BP.set_motor_dps(D, speed)
+    BP.set_motor_dps(D, -speed)
+
 
 def backward(speed=DEFAULT_SPEED):
     print("Moving backward")
-    BP.set_motor_dps(A, -speed)
+    BP.set_motor_dps(A, speed)
     BP.set_motor_dps(B, -speed)
     BP.set_motor_dps(C, -speed)
-    BP.set_motor_dps(D, -speed)
+    BP.set_motor_dps(D, speed)
 
 def rotate_clockwise(speed=DEFAULT_SPEED):
     print("Rotating clockwise")
     BP.set_motor_dps(A, -speed)
     BP.set_motor_dps(B, -speed)
-    BP.set_motor_dps(C, speed)
-    BP.set_motor_dps(D, speed)
+    BP.set_motor_dps(C, -speed)
+    BP.set_motor_dps(D, -speed)
 
 def rotate_anticlockwise(speed=DEFAULT_SPEED):
     print("Rotating anticlockwise")
     BP.set_motor_dps(A, speed)
     BP.set_motor_dps(B, speed)
-    BP.set_motor_dps(C, -speed)
-    BP.set_motor_dps(D, -speed)
+    BP.set_motor_dps(C, speed)
+    BP.set_motor_dps(D, speed)
 
 def stop_motors():
     print("Stopping motors")
