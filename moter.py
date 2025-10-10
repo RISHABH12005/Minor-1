@@ -1,3 +1,4 @@
+from fastapi import FastAPI, HTTPException
 from brickpi3 import BrickPi3
 import time
 
@@ -6,8 +7,9 @@ A = BP.PORT_A
 B = BP.PORT_C
 C = BP.PORT_B
 D = BP.PORT_D
+DEFAULT_SPEED = 1000 
 
-DEFAULT_SPEED = 1000
+app = FastAPI()
 
 def forward(speed=DEFAULT_SPEED):
     print("Moving forward")
@@ -15,7 +17,6 @@ def forward(speed=DEFAULT_SPEED):
     BP.set_motor_dps(B, speed)
     BP.set_motor_dps(C, speed)
     BP.set_motor_dps(D, -speed)
-
 
 def backward(speed=DEFAULT_SPEED):
     print("Moving backward")
@@ -45,30 +46,32 @@ def stop_motors():
     BP.set_motor_power(C, 0)
     BP.set_motor_power(D, 0)
 
-try:
-    while True:
-        cmd = input("Enter command (forward, backward, clockwise, anticlockwise, stop, exit): ").strip().lower()
+@app.get("/motor/move/{command}")
+def motor_command(command: str):
+    """API endpoint to receive and execute motor commands."""
+    
+    # Stop motors first for instant response to new command
+    stop_motors() 
 
-        if cmd == "f":
-            forward()
-        elif cmd == "b":
-            backward()
-        elif cmd == "c":
-            rotate_clockwise()
-        elif cmd == "a":
-            rotate_anticlockwise()
-        elif cmd == "s":
-            stop_motors()
-        elif cmd == "e":
-            stop_motors()
-            print("Exiting program.")
-            break
-        else:
-            print("Invalid command. Try again.")
+    if command == "forward":
+        forward()
+    elif command == "backward":
+        backward()
+    elif command == "left": 
+        rotate_anticlockwise()
+    elif command == "right": 
+        rotate_clockwise()
+    elif command == "stop":
+        stop_motors() 
+    else:
+        raise HTTPException(status_code=400, detail=f"Invalid command: {command}")
 
-except KeyboardInterrupt:
-    print("Program interrupted by user.")
+    return {"status": "success", "command": command, "message": f"Executed {command} command."}
 
-finally:
+@app.on_event("shutdown")
+def shutdown_event():
+    """Ensure motors are stopped when the API server shuts down."""
     stop_motors()
     BP.reset_all()
+
+# To run this, use: uvicorn motor_api:app --host 0.0.0.0 --port 8000
