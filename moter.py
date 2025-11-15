@@ -2,46 +2,35 @@ from brickpi3 import BrickPi3
 import time
 
 BP = BrickPi3()
-A = BP.PORT_A
-B = BP.PORT_C
-C = BP.PORT_B
+
+C = BP.PORT_C
 D = BP.PORT_D
 
-DEFAULT_SPEED = 1000
+DEFAULT_SPEED = 400
 
 def forward(speed=DEFAULT_SPEED):
     print("Moving forward")
-    BP.set_motor_dps(A, -speed)
-    BP.set_motor_dps(B, speed)
     BP.set_motor_dps(C, speed)
-    BP.set_motor_dps(D, -speed)
+    BP.set_motor_dps(D, speed)
 
 
 def backward(speed=DEFAULT_SPEED):
     print("Moving backward")
-    BP.set_motor_dps(A, speed)
-    BP.set_motor_dps(B, -speed)
     BP.set_motor_dps(C, -speed)
-    BP.set_motor_dps(D, speed)
+    BP.set_motor_dps(D, -speed)
 
 def rotate_clockwise(speed=DEFAULT_SPEED):
     print("Rotating clockwise")
-    BP.set_motor_dps(A, -speed)
-    BP.set_motor_dps(B, -speed)
-    BP.set_motor_dps(C, -speed)
+    BP.set_motor_dps(C, speed)
     BP.set_motor_dps(D, -speed)
 
 def rotate_anticlockwise(speed=DEFAULT_SPEED):
     print("Rotating anticlockwise")
-    BP.set_motor_dps(A, speed)
-    BP.set_motor_dps(B, speed)
-    BP.set_motor_dps(C, speed)
+    BP.set_motor_dps(C, -speed)
     BP.set_motor_dps(D, speed)
 
 def stop_motors():
     print("Stopping motors")
-    BP.set_motor_power(A, 0)
-    BP.set_motor_power(B, 0)
     BP.set_motor_power(C, 0)
     BP.set_motor_power(D, 0)
 
