@@ -1,0 +1,192 @@
+import cv2
+import numpy as np
+import time
+import threading
+from picamera2 import Picamera2
+from brickpi3 import BrickPi3
+
+# ==========================================================
+#              SHARED VARIABLES (THREAD SAFE)
+# ==========================================================
+center_x = None
+last_radius = 0
+lock = threading.Lock()
+
+# ==========================================================
+#            CAMERA + CONTROL THRESHOLDS (TUNED)
+# ==========================================================
+FRAME_W = 320
+CENTER = FRAME_W // 2
+
+# Movement speeds (safe & smooth)
+FORWARD_SPEED = 260
+REVERSE_SPEED = 300
+ROTATE_LIMIT = 320
+
+# PID tuning (stable rotation)
+KP = 0.32
+KD = 0.18
+last_error = 0
+
+# Radius thresholds (IMPORTANT, FIXED)
+RADIUS_FULL = 130      # FULL FRAME → BACKWARD
+RADIUS_NEAR = 95       # VERY CLOSE → STOP
+RADIUS_FAR = 70        # FAR ENOUGH → FORWARD
+
+CENTER_TOL = 30        # if inside ±30 px → centered
+
+
+# ==========================================================
+#                          MOTORS
+# ==========================================================
+BP = BrickPi3()
+LEFT = BP.PORT_D
+RIGHT = BP.PORT_C
+
+def set_motors(left, right):
+    BP.set_motor_dps(LEFT, left)
+    BP.set_motor_dps(RIGHT, right)
+
+def stop_motors():
+    BP.set_motor_power(LEFT, 0)
+    BP.set_motor_power(RIGHT, 0)
+
+
+# ==========================================================
+#                   CAMERA THREAD (DETECTION)
+# ==========================================================
+def camera_thread():
+    global center_x, last_radius
+
+    pic = Picamera2()
+    pic.configure(picap_config := pic.create_preview_configuration(
+        main={"format": "RGB888", "size": (320, 320)}
+    ))
+    pic.start()
+
+    kernel = np.ones((5, 5), np.uint8)
+
+    # HSV for green (stable)
+    LOWER = np.array([35, 70, 60])
+    UPPER = np.array([90, 255, 255])
+
+    while True:
+        frame = pic.capture_array()
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        mask = cv2.inRange(hsv, LOWER, UPPER)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        cx, radius = None, 0
+
+        if cnts:
+            c = max(cnts, key=cv2.contourArea)
+            if cv2.contourArea(c) > 300:
+                M = cv2.moments(c)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                (_, _), radius = cv2.minEnclosingCircle(c)
+
+        with lock:
+            center_x = cx
+            last_radius = radius
+
+        cv2.imshow("Frame", frame)
+        cv2.imshow("Mask", mask)
+
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+
+    pic.stop()
+    cv2.destroyAllWindows()
+
+
+# ==========================================================
+#               MOTOR THREAD (FINAL BEHAVIOR)
+# ==========================================================
+def motor_thread():
+    global last_error
+
+    while True:
+        with lock:
+            cx = center_x
+            radius = last_radius
+
+        # ------------------------------------------------------
+        # 1. OBJECT LOST → STOP
+        # ------------------------------------------------------
+        if cx is None:
+            stop_motors()
+            time.sleep(0.01)
+            continue
+
+        # ------------------------------------------------------
+        # 2. FULL SCREEN COVERED → REVERSE
+        # ------------------------------------------------------
+        if radius > RADIUS_FULL:
+            set_motors(-REVERSE_SPEED, -REVERSE_SPEED)
+            time.sleep(0.01)
+            continue
+
+        # ------------------------------------------------------
+        # 3. OBJECT CLOSE BUT NOT FULL → STOP
+        # ------------------------------------------------------
+        if RADIUS_NEAR < radius <= RADIUS_FULL:
+            stop_motors()
+            time.sleep(0.01)
+            continue
+
+        # ------------------------------------------------------
+        # 4. OBJECT FAR → MOVE FORWARD (NOW FIXED!)
+        # ------------------------------------------------------
+        if radius < RADIUS_FAR:
+            set_motors(FORWARD_SPEED, FORWARD_SPEED)
+            time.sleep(0.01)
+            continue
+
+        # ------------------------------------------------------
+        # 5. OBJECT MID-RANGE → PID ROTATION
+        # ------------------------------------------------------
+        error = cx - CENTER
+        derivative = error - last_error
+        last_error = error
+
+        rotation = KP * error + KD * derivative
+        rotation = np.clip(rotation, -ROTATE_LIMIT, ROTATE_LIMIT)
+
+        # centered → forward
+        if abs(error) < CENTER_TOL:
+            set_motors(FORWARD_SPEED, FORWARD_SPEED)
+            time.sleep(0.01)
+            continue
+
+        # rotate left/right
+        set_motors(-rotation, rotation)
+        time.sleep(0.01)
+
+
+# ==========================================================
+#                           MAIN
+# ==========================================================
+try:
+    t1 = threading.Thread(target=camera_thread, daemon=True)
+    t2 = threading.Thread(target=motor_thread, daemon=True)
+
+    t1.start()
+    t2.start()
+
+    print("Robot Running... Press CTRL + C to stop.")
+
+    while True:
+        time.sleep(1)
+
+except KeyboardInterrupt:
+    pass
+
+finally:
+    stop_motors()
+    BP.reset_all()
+    print("Robot Stopped Safely")
