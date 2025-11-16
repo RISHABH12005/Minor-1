@@ -1,4 +1,4 @@
-# Industrial Inspection Maintenance Robot (IIMR)
+# Industrial Inspection & Maintenance Control Robot
 A robotic system designed to autonomously or semi autonomously navigate industrial env detect faults or anomalies perform basic maintenance tasks & report findings to a central monitoring station. It aims to ensure workplace safety, minimize downtime & enable predictive maintenance using AI, Robotics, IoT tech.
 
 ## Documentation
