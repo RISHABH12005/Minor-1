@@ -137,7 +137,7 @@ def motor_thread():
 
         # ---- MANUAL MODE ACTIVE → AUTONOMOUS PAUSED ----
         if manual_mode:
-            if time.time() - manual_last_time > 60:
+            if time.time() - manual_last_time > 30:
                 manual_mode = False  # Auto return to autonomous
             else:
                 time.sleep(0.01)
@@ -229,7 +229,7 @@ try:
     print("Robot Running... Press CTRL + C to stop.")
 
     while True:
-        time.sleep(0.3)
+        time.sleep(1)
 
 except KeyboardInterrupt:
     pass
