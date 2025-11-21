@@ -1,206 +1,241 @@
-# robot_controller.py
 import cv2
 import numpy as np
-import threading
 import time
+import threading
 from picamera2 import Picamera2
 from brickpi3 import BrickPi3
 
+# ==========================================================
+#              GLOBAL MODE & TIMERS
+# ==========================================================
+manual_mode = False
+manual_last_time = time.time()
 
-class RobotController:
+# ==========================================================
+#              SHARED VARIABLES (THREAD SAFE)
+# ==========================================================
+center_x = None
+last_radius = 0
+lock = threading.Lock()
 
-    def __init__(self, auto_timeout=30):
+# ==========================================================
+#            CAMERA + CONTROL THRESHOLDS (TUNED)
+# ==========================================================
+FRAME_W = 320
+CENTER = FRAME_W // 2
 
-        # ---------------- GLOBAL STATES ----------------
-        self.manual_mode = False
-        self.manual_last_time = time.time()
-        self.auto_timeout = auto_timeout
+FORWARD_SPEED = 260
+REVERSE_SPEED = 300
+ROTATE_LIMIT = 320
 
-        # Shared detection state
-        self.center_x = None
-        self.last_radius = 0
-        self.lock = threading.Lock()
+KP = 0.32
+KD = 0.18
+last_error = 0
 
-        # Autonomous tuning
-        self.FRAME_W = 320
-        self.CENTER = self.FRAME_W // 2
+RADIUS_FULL = 130
+RADIUS_NEAR = 95
+RADIUS_FAR = 70
 
-        self.FORWARD_SPEED = 260
-        self.REVERSE_SPEED = 300
-        self.ROTATE_LIMIT = 320
+CENTER_TOL = 30
 
-        self.KP = 0.32
-        self.KD = 0.18
-        self.last_error = 0
+# ==========================================================
+#                          MOTORS
+# ==========================================================
+BP = BrickPi3()
+LEFT = BP.PORT_D
+RIGHT = BP.PORT_C
 
-        self.RADIUS_FULL = 130
-        self.RADIUS_NEAR = 95
-        self.RADIUS_FAR = 70
+def auto_set_motors(left, right):
+    BP.set_motor_dps(LEFT, left)
+    BP.set_motor_dps(RIGHT, right)
 
-        self.CENTER_TOL = 30
+def auto_stop_motors():
+    BP.set_motor_power(LEFT, 0)
+    BP.set_motor_power(RIGHT, 0)
 
-        # ---------------- MOTORS ----------------
-        self.BP = BrickPi3()
-        self.LEFT = self.BP.PORT_D
-        self.RIGHT = self.BP.PORT_C
+# Manual controls
+C = RIGHT
+D = LEFT
+DEFAULT_SPEED = 400
 
-        self.DEFAULT_SPEED = 400
+def forward(speed=DEFAULT_SPEED):
+    BP.set_motor_dps(C, speed)
+    BP.set_motor_dps(D, speed)
 
-        # Flags & Threads
-        self.threads_running = False
+def backward(speed=DEFAULT_SPEED):
+    BP.set_motor_dps(C, -speed)
+    BP.set_motor_dps(D, -speed)
 
-    # =====================================================
-    #                     MOTOR HELPERS
-    # =====================================================
-    def auto_set(self, left, right):
-        self.BP.set_motor_dps(self.LEFT, left)
-        self.BP.set_motor_dps(self.RIGHT, right)
+def rotate_clockwise(speed=DEFAULT_SPEED):
+    BP.set_motor_dps(C, speed)
+    BP.set_motor_dps(D, -speed)
 
-    def auto_stop(self):
-        self.BP.set_motor_power(self.LEFT, 0)
-        self.BP.set_motor_power(self.RIGHT, 0)
+def rotate_anticlockwise(speed=DEFAULT_SPEED):
+    BP.set_motor_dps(C, -speed)
+    BP.set_motor_dps(D, speed)
 
-    def forward(self, speed=None):
-        if speed is None: speed = self.DEFAULT_SPEED
-        self.BP.set_motor_dps(self.LEFT, speed)
-        self.BP.set_motor_dps(self.RIGHT, speed)
+def stop_manual():
+    BP.set_motor_power(C, 0)
+    BP.set_motor_power(D, 0)
 
-    def backward(self, speed=None):
-        if speed is None: speed = self.DEFAULT_SPEED
-        self.BP.set_motor_dps(self.LEFT, -speed)
-        self.BP.set_motor_dps(self.RIGHT, -speed)
 
-    def rotate_left(self, speed=None):
-        if speed is None: speed = self.DEFAULT_SPEED
-        self.BP.set_motor_dps(self.LEFT, -speed)
-        self.BP.set_motor_dps(self.RIGHT, speed)
+# ==========================================================
+#                   CAMERA THREAD (DETECTION)
+# ==========================================================
+def camera_thread():
+    global center_x, last_radius
 
-    def rotate_right(self, speed=None):
-        if speed is None: speed = self.DEFAULT_SPEED
-        self.BP.set_motor_dps(self.LEFT, speed)
-        self.BP.set_motor_dps(self.RIGHT, -speed)
+    pic = Picamera2()
+    pic.configure(picap_config := pic.create_preview_configuration(
+        main={"format": "RGB888", "size": (320, 320)}
+    ))
+    pic.start()
 
-    def stop_manual(self):
-        self.BP.set_motor_power(self.LEFT, 0)
-        self.BP.set_motor_power(self.RIGHT, 0)
+    kernel = np.ones((5, 5), np.uint8)
+    LOWER = np.array([35, 70, 60])
+    UPPER = np.array([90, 255, 255])
 
-    # =====================================================
-    #                   CAMERA THREAD
-    # =====================================================
-    def camera_thread(self):
-        pic = Picamera2()
-        pic.configure(picap_config := pic.create_preview_configuration(
-            main={"format": "RGB888", "size": (320, 320)}
-        ))
-        pic.start()
+    while True:
+        frame = pic.capture_array()
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        kernel = np.ones((5, 5), np.uint8)
-        LOWER = np.array([35, 70, 60])
-        UPPER = np.array([90, 255, 255])
+        mask = cv2.inRange(hsv, LOWER, UPPER)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-        while self.threads_running:
-            frame = pic.capture_array()
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cx, radius = None, 0
 
-            mask = cv2.inRange(hsv, LOWER, UPPER)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        if cnts:
+            c = max(cnts, key=cv2.contourArea)
+            if cv2.contourArea(c) > 300:
+                M = cv2.moments(c)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                (_, _), radius = cv2.minEnclosingCircle(c)
 
-            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        with lock:
+            center_x = cx
+            last_radius = radius
 
-            cx, radius = None, 0
+        cv2.imshow("Frame", frame)
+        cv2.imshow("Mask", mask)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
 
-            if cnts:
-                c = max(cnts, key=cv2.contourArea)
-                if cv2.contourArea(c) > 300:
-                    M = cv2.moments(c)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"] / M["m00"])
-                    (_, _), radius = cv2.minEnclosingCircle(c)
+    pic.stop()
+    cv2.destroyAllWindows()
 
-            with self.lock:
-                self.center_x = cx
-                self.last_radius = radius
 
+# ==========================================================
+#               MOTOR THREAD (AUTONOMOUS MODE)
+# ==========================================================
+def motor_thread():
+    global manual_mode, manual_last_time, last_error
+
+    while True:
+
+        # ---- MANUAL MODE ACTIVE → AUTONOMOUS PAUSED ----
+        if manual_mode:
+            if time.time() - manual_last_time > 60:
+                manual_mode = False  # Auto return to autonomous
+            else:
+                time.sleep(0.01)
+                continue
+
+        # ---- AUTONOMOUS MODE BELOW ----
+        with lock:
+            cx = center_x
+            radius = last_radius
+
+        if cx is None:
+            auto_stop_motors()
             time.sleep(0.01)
+            continue
 
-        pic.stop()
+        if radius > RADIUS_FULL:
+            auto_set_motors(-REVERSE_SPEED, -REVERSE_SPEED)
+            time.sleep(0.01)
+            continue
 
-    # =====================================================
-    #              AUTONOMOUS CONTROL THREAD
-    # =====================================================
-    def motor_thread(self):
-        while self.threads_running:
+        if RADIUS_NEAR < radius <= RADIUS_FULL:
+            auto_stop_motors()
+            time.sleep(0.01)
+            continue
 
-            # Manual override active
-            if self.manual_mode:
-                if time.time() - self.manual_last_time > self.auto_timeout:
-                    self.manual_mode = False
-                else:
-                    time.sleep(0.01)
-                    continue
+        if radius < RADIUS_FAR:
+            auto_set_motors(FORWARD_SPEED, FORWARD_SPEED)
+            time.sleep(0.01)
+            continue
 
-            with self.lock:
-                cx = self.center_x
-                radius = self.last_radius
+        # PID rotation
+        error = cx - CENTER
+        derivative = error - last_error
+        last_error = error
 
-            if cx is None:
-                self.auto_stop()
-                continue
+        rotation = KP * error + KD * derivative
+        rotation = np.clip(rotation, -ROTATE_LIMIT, ROTATE_LIMIT)
 
-            if radius > self.RADIUS_FULL:
-                self.auto_set(-self.REVERSE_SPEED, -self.REVERSE_SPEED)
-                continue
+        if abs(error) < CENTER_TOL:
+            auto_set_motors(FORWARD_SPEED, FORWARD_SPEED)
+            time.sleep(0.01)
+            continue
 
-            if self.RADIUS_NEAR < radius <= self.RADIUS_FULL:
-                self.auto_stop()
-                continue
+        auto_set_motors(-rotation, rotation)
+        time.sleep(0.01)
 
-            if radius < self.RADIUS_FAR:
-                self.auto_set(self.FORWARD_SPEED, self.FORWARD_SPEED)
-                continue
 
-            # PID rotation
-            error = cx - self.CENTER
-            derivative = error - self.last_error
-            self.last_error = error
+# ==========================================================
+#                     KEYBOARD THREAD
+# ==========================================================
+def keyboard_thread():
+    global manual_mode, manual_last_time
 
-            rotation = self.KP * error + self.KD * derivative
-            rotation = np.clip(rotation, -self.ROTATE_LIMIT, self.ROTATE_LIMIT)
+    print("\nManual Mode Keys: W/A/S/D/X")
+    print("Auto returns to autonomous after 60 sec of no input.\n")
 
-            if abs(error) < self.CENTER_TOL:
-                self.auto_set(self.FORWARD_SPEED, self.FORWARD_SPEED)
-                continue
+    while True:
+        key = input().lower().strip()
 
-            self.auto_set(-rotation, rotation)
+        manual_mode = True
+        manual_last_time = time.time()
 
-    # =====================================================
-    #               MODE MANAGEMENT
-    # =====================================================
-    def start_autonomous(self):
-        self.manual_mode = False
+        if key == 'w':
+            forward()
+        elif key == 's':
+            backward()
+        elif key == 'a':
+            rotate_anticlockwise()
+        elif key == 'd':
+            rotate_clockwise()
+        elif key == 'x':
+            stop_manual()
+        else:
+            stop_manual()
 
-    def start_manual(self):
-        self.manual_mode = True
-        self.manual_last_time = time.time()
 
-    # =====================================================
-    #               THREAD CONTROL
-    # =====================================================
-    def start(self):
-        if self.threads_running:
-            return
+# ==========================================================
+#                           MAIN
+# ==========================================================
+try:
+    t1 = threading.Thread(target=camera_thread, daemon=True)
+    t2 = threading.Thread(target=motor_thread, daemon=True)
+    t3 = threading.Thread(target=keyboard_thread, daemon=True)
 
-        self.threads_running = True
+    t1.start()
+    t2.start()
+    t3.start()
 
-        self.t1 = threading.Thread(target=self.camera_thread, daemon=True)
-        self.t2 = threading.Thread(target=self.motor_thread, daemon=True)
+    print("Robot Running... Press CTRL + C to stop.")
 
-        self.t1.start()
-        self.t2.start()
+    while True:
+        time.sleep(0.3)
 
-    def stop(self):
-        self.threads_running = False
-        self.auto_stop()
-        self.stop_manual()
-        self.BP.reset_all()
+except KeyboardInterrupt:
+    pass
+
+finally:
+    auto_stop_motors()
+    stop_manual()
+    BP.reset_all()
+    print("Robot Stopped Safely")
